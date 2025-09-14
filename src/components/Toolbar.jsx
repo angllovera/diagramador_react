@@ -131,6 +131,7 @@ export default function Toolbar() {
     downloadBlob(blob, "diagram.json");
   }
 
+  // src/components/Toolbar.jsx
   function loadJSON(e) {
     if (!onDiagramPage) return;
     const f = e.target.files?.[0];
@@ -138,11 +139,7 @@ export default function Toolbar() {
     const r = new FileReader();
     r.onload = () => {
       const obj = normalizeGoJsModel(deepParseMaybe(String(r.result ?? "")));
-
-      setModelJson(JSON.stringify(obj, null, 2));
-      window.dispatchEvent(
-        new CustomEvent("diagram:load-json", { detail: obj })
-      );
+      setModelJson(JSON.stringify(obj, null, 2)); // ← ya alcanzará a DiagramCanvas por contexto
     };
     r.readAsText(f);
     e.target.value = "";

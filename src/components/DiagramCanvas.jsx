@@ -12,7 +12,8 @@ export default function DiagramCanvas() {
   const [loading, setLoading] = useState(true);
   const initialLoadedRef = useRef(false);
   const debounceRef = useRef(null);
-  const lastAppliedJsonRef = useRef(""); // evita re-aplicar
+  const lastAppliedJsonRef = useRef(""); // ← para evitar aplicar 2 veces el mismo JSON
+  const isApplyingFromJsonRef = useRef(false);
 
   // ---- ID del diagrama: ruta > query (soporta ambos)
   const { id: idFromRoute } = useParams(); // /diagram/:id
@@ -144,38 +145,66 @@ export default function DiagramCanvas() {
     };
   }, [diagram, diagramId, setModelJson]);
 
-  // Cuando el JSON del contexto cambia (ej. al "Cargar JSON"), aplicarlo al Diagrama
   useEffect(() => {
     if (!diagram) return;
-    const handler = (ev) => {
-      const obj = ev?.detail;
-      if (!obj) return;
-      try {
-        // Pausar autosave
-        const prev = initialLoadedRef.current;
-        initialLoadedRef.current = false;
 
-        // Aplicar modelo
-        diagram.model = go.Model.fromJson(obj);
+    const txt = (modelJson ?? "").trim();
+    if (!txt) return;
 
-        // Evitar animación al ajustar vista
-        const wasEnabled = diagram.animationManager.isEnabled;
-        diagram.animationManager.isEnabled = false;
-        if (diagram.nodes.any()) diagram.zoomToFit();
-        diagram.animationManager.isEnabled = wasEnabled;
+    // evita aplicar el mismo JSON 2 veces
+    if (txt === lastAppliedJsonRef.current) return;
 
-        // Reanudar autosave
-        initialLoadedRef.current = prev;
+    try {
+      // parse seguro (acepta string u objeto)
+      let obj =
+        typeof modelJson === "string" ? JSON.parse(modelJson) : modelJson;
+      if (!obj || typeof obj !== "object") return;
 
-        // Sincroniza editor lateral
-        setModelJson(JSON.stringify(obj, null, 2));
-      } catch (e) {
-        console.error("No se pudo aplicar el modelo cargado:", e);
+      // normalización mínima para GoJS
+      if (!obj.class || obj.class === "GraphLinksModel")
+        obj.class = "go.GraphLinksModel";
+      obj.nodeKeyProperty = obj.nodeKeyProperty || "key";
+      obj.linkKeyProperty = obj.linkKeyProperty || "key";
+      obj.linkCategoryProperty = obj.linkCategoryProperty || "category";
+      if (!Array.isArray(obj.nodeDataArray)) obj.nodeDataArray = [];
+      if (!Array.isArray(obj.linkDataArray)) obj.linkDataArray = [];
+
+      // Pausar autosave mientras reemplazamos
+      const prev = initialLoadedRef.current;
+      initialLoadedRef.current = false;
+      isApplyingFromJsonRef.current = true;
+
+      // Aplicar modelo sin animación/slide
+      const wasAnim = diagram.animationManager.isEnabled;
+      diagram.animationManager.isEnabled = false;
+      diagram.model = go.Model.fromJson(obj);
+      // si no quieres zoomToFit automático, comenta la siguiente línea
+      if (diagram.nodes.count > 0) diagram.zoomToFit();
+      diagram.animationManager.isEnabled = wasAnim;
+
+      // Marcar como aplicado para no repetir
+      lastAppliedJsonRef.current =
+        typeof modelJson === "string" ? modelJson : JSON.stringify(obj);
+
+      // Reanudar autosave
+      initialLoadedRef.current = prev;
+
+      // Persistir una vez (importante en proyectos nuevos)
+      if (diagramId) {
+        updateDiagram(diagramId, { modelJson: obj })
+          .catch((err) =>
+            console.error("Error guardando tras cargar JSON:", err)
+          )
+          .finally(() => {
+            isApplyingFromJsonRef.current = false;
+          });
+      } else {
+        isApplyingFromJsonRef.current = false;
       }
-    };
-    window.addEventListener("diagram:load-json", handler);
-    return () => window.removeEventListener("diagram:load-json", handler);
-  }, [diagram, setModelJson]);
+    } catch (e) {
+      console.error("JSON inválido al aplicar en el diagrama:", e);
+    }
+  }, [diagram, modelJson, diagramId]);
 
   // Atajos: +/-, F, 0
   useEffect(() => {
