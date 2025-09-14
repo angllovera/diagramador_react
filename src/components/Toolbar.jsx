@@ -148,18 +148,21 @@ export default function Toolbar() {
   // Export / Generate / IA / Share
   async function exportXMI() {
     if (!onDiagramPage) return;
-    const model = assertModel();
+    const parsed = deepParseMaybe(modelJson);
+    const model = normalizeGoJsModel(parsed);
     if (!model) return;
+
     try {
       setBusy((b) => ({ ...b, xmi: true }));
-      const res = await fetch(`${apiBase}/export/xmi`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(model),
+      const res = await fetch(`${apiBase}/api/export/xmi`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
       });
+
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
-      downloadBlob(blob, "model.xmi");
+      downloadBlob(blob, "diagram.xmi");
     } catch (err) {
       alert("Error al exportar XMI: " + err.message);
     } finally {
