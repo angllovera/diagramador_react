@@ -1,45 +1,60 @@
-let accessToken = localStorage.getItem('accessToken') || null;
+// src/api/http.js
+
+// Puedes dejar VITE_API_URL sin /api, el builder lo agrega si falta.
+const API = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+
+let _accessToken = localStorage.getItem('accessToken') || null;
 
 export function setAccessToken(token) {
-  accessToken = token;
+  _accessToken = token || null;
   if (token) localStorage.setItem('accessToken', token);
   else localStorage.removeItem('accessToken');
 }
 
-async function safeJson(res) { try { return await res.json(); } catch { return null; } }
-
-async function refreshToken() {
-  const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' });
-  if (!res.ok) throw new Error('No se pudo refrescar el token');
-  const data = await safeJson(res);
-  if (data?.access_token) setAccessToken(data.access_token);
-  return data;
+export function getAccessToken() {
+  return _accessToken;
 }
 
-/** Wrapper de fetch con Authorization y auto‑refresh */
-export async function apiFetch(path, options = {}, cfg = { auth: true }) {
-  const headers = new Headers(options.headers || {});
-  if (cfg.auth && accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
-  if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+// Fuerza el prefijo /api si falta, respeta /api si ya viene en path
+function buildUrl(path) {
+  const base = (API || '').replace(/\/+$/, '');
+  const p = (path || '').startsWith('/') ? path : `/${path}`;
+  return p.startsWith('/api') ? `${base}${p}` : `${base}/api${p}`;
+}
 
-  const exec = () => fetch(path, { ...options, headers, credentials: 'include' });
-  let res = await exec();
+export async function apiFetch(
+  path,
+  { method = 'GET', body, headers = {}, auth = true } = {}
+) {
+  const url = buildUrl(path);
+  console.log('[apiFetch] →', url); // DEBUG: verifica a dónde pega
 
-  if (cfg.auth && res.status === 401) {
-    try {
-      await refreshToken();
-      const h2 = new Headers(headers);
-      if (accessToken) h2.set('Authorization', `Bearer ${accessToken}`);
-      res = await fetch(path, { ...options, headers: h2, credentials: 'include' });
-    } catch {
-      setAccessToken(null);
-      throw new Error('Sesión expirada. Inicia sesión.');
-    }
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json', ...headers },
+    credentials: 'include', // necesario si usas cookies httpOnly
+  };
+
+  if (body !== undefined) {
+    opts.body = typeof body === 'string' ? body : JSON.stringify(body);
   }
+
+  // Adjunta Authorization si hay token
+  const at = getAccessToken();
+  if (auth && at) opts.headers.Authorization = `Bearer ${at}`;
+
+  const res = await fetch(url, opts);
 
   if (!res.ok) {
-    const err = await safeJson(res);
-    throw new Error(err?.error || `HTTP ${res.status}`);
+    let msg = `HTTP ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j?.error) msg = j.error;
+    } catch { /* ignore */ }
+    throw new Error(msg);
   }
-  return safeJson(res);
+
+  // 204 No Content
+  if (res.status === 204) return null;
+  return res.json();
 }

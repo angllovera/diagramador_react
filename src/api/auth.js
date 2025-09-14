@@ -1,25 +1,40 @@
-import { apiFetch, setAccessToken } from './http';
+// src/api/auth.js
+import { apiFetch, setAccessToken } from "./http";
 
-export function register({ name, email, password }) {
-  return apiFetch('/api/auth/register', {
-    method: 'POST', body: JSON.stringify({ name, email, password })
-  }, { auth: false }).then(d => { if (d?.access_token) setAccessToken(d.access_token); return d; });
+export const getMe = () => apiFetch("/users/me", { auth: true });
+
+export async function login(data) {
+  return apiFetch("/auth/login", { method: "POST", body: data, auth: false });
 }
 
-export function login({ email, password }) {
-  return apiFetch('/api/auth/login', {
-    method: 'POST', body: JSON.stringify({ email, password })
-  }, { auth: false }).then(d => { if (d?.access_token) setAccessToken(d.access_token); return d; });
+export async function register(data) {
+  const r = await apiFetch("/auth/register", {
+    method: "POST",
+    body: data,
+    auth: false,
+  });
+  if (r?.accessToken) setAccessToken(r.accessToken);
+  if (r?.refreshToken) localStorage.setItem("refreshToken", r.refreshToken);
+  return r;
 }
-
-export function refresh() {
-  return apiFetch('/api/auth/refresh', { method: 'POST' }, { auth: false })
-    .then(d => { if (d?.access_token) setAccessToken(d.access_token); return d; });
+export async function refresh() {
+  const rt = localStorage.getItem("refreshToken");
+  if (!rt) throw new Error("No refresh token");
+  const r = await apiFetch("/auth/refresh-token", {
+    method: "POST",
+    body: { refreshToken: rt },
+    auth: false,
+  });
+  if (r?.accessToken) setAccessToken(r.accessToken);
+  if (r?.refreshToken) localStorage.setItem("refreshToken", r.refreshToken);
+  return r;
 }
-
-export function logout() {
-  setAccessToken(null);
-  return apiFetch('/api/auth/logout', { method: 'POST' }, { auth: false });
+export async function logout() {
+  try {
+    await apiFetch("/auth/logout", { method: "POST", auth: true });
+  } catch {
+  } finally {
+    setAccessToken(null);
+    localStorage.removeItem("refreshToken");
+  }
 }
-
-export function getMe() { return apiFetch('/api/users/me'); }

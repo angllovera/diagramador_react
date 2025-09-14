@@ -100,7 +100,7 @@ export default function Login() {
             </div>
 
             <p className="text-center text-muted small mt-3 mb-0">
-              © {new Date().getFullYear()} Planos — Seguridad primero
+              © {new Date().getFullYear()} Diagramas — Seguridad primero
             </p>
           </div>
         </div>
