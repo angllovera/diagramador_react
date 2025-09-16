@@ -406,6 +406,37 @@ function makeGroupTemplate() {
 function applyLinkTemplates(diagram) {
   const $ = go.GraphObject.make;
 
+  // ---------- estilos y contenedor HTML del menú (inyectados una sola vez) ----------
+  (function ensureMenuOnce() {
+    if (!document.getElementById("gojsLinkMenuStyle")) {
+      const style = document.createElement("style");
+      style.id = "gojsLinkMenuStyle";
+      style.textContent = `
+      .gojs-menu{position:absolute;z-index:1000;background:#fff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 10px 25px rgba(0,0,0,.08);width:200px;padding:4px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+      .gojs-menu.hidden{display:none}
+      .gojs-menu-scroller{max-height:200px;overflow-y:auto;overscroll-behavior:contain}
+      .gojs-item{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;cursor:pointer;color:#111827;font-size:12px;line-height:1;white-space:nowrap}
+      .gojs-item:hover{background:#f3f4f6}
+      .gojs-sep{height:1px;background:#e5e7eb;margin:4px 0}
+      .gojs-title{color:#6b7280;font-weight:700;padding:2px 6px;font-size:11px}
+      .gojs-check{color:#10b981;width:12px;text-align:center}
+      .gojs-spacer{width:12px}
+      .gojs-mini{color:#6b7280;font-size:11px}
+      `;
+      document.head.appendChild(style);
+    }
+    if (!document.getElementById("gojsLinkMenu")) {
+      const div = document.createElement("div");
+      div.id = "gojsLinkMenu";
+      div.className = "gojs-menu hidden";
+      div.innerHTML = `<div class="gojs-menu-scroller"></div>`;
+      document.body.appendChild(div);
+    }
+  })();
+
+  const menuDiv = document.getElementById("gojsLinkMenu");
+  const scroller = menuDiv.querySelector(".gojs-menu-scroller");
+
   const baseLink = {
     routing: go.Link.AvoidsNodes,
     curve: go.Link.JumpGap,
@@ -415,41 +446,26 @@ function applyLinkTemplates(diagram) {
     selectionAdorned: true,
     fromShortLength: 6,
     toShortLength: 6,
+    reshapable: true,
+    resegmentable: true,
+    adjusting: go.Link.End,
   };
 
   const normal = { stroke: "#111827", strokeWidth: 1.2 };
-  const dashed = {
-    strokeDashArray: [6, 4],
-    stroke: "#111827",
-    strokeWidth: 1.2,
-  };
+  const dashed = { strokeDashArray: [6, 4], stroke: "#111827", strokeWidth: 1.2 };
 
   const setCat = (cat) => (e, obj) =>
     e.diagram.model.setCategoryForLinkData(obj.part.data, cat);
 
-  const linkContextMenu = $(
-    "ContextMenu",
-    $("ContextMenuButton", $(go.TextBlock, "Association"), {
-      click: setCat("association"),
-    }),
-    $("ContextMenuButton", $(go.TextBlock, "Aggregation ◊"), {
-      click: setCat("aggregation"),
-    }),
-    $("ContextMenuButton", $(go.TextBlock, "Composition ♦"), {
-      click: setCat("composition"),
-    }),
-    $("ContextMenuButton", $(go.TextBlock, "Generalization ▷"), {
-      click: setCat("generalization"),
-    }),
-    $("ContextMenuButton", $(go.TextBlock, "Realization --▷"), {
-      click: setCat("realization"),
-    }),
-    $("ContextMenuButton", $(go.TextBlock, "Dependency --▷"), {
-      click: setCat("dependency"),
-    })
-  );
+  const setMul = (fromMul, toMul) => (e, obj) => {
+    const m = e.diagram.model;
+    m.startTransaction("set multiplicity");
+    m.setDataProperty(obj.part.data, "fromMultiplicity", fromMul);
+    m.setDataProperty(obj.part.data, "toMultiplicity", toMul);
+    m.commitTransaction("set multiplicity");
+  };
 
-  // helper: añade labels de multiplicidad
+  // ---------- helpers de labels ----------
   function withMultiplicity(shapeDef, arrowDef) {
     return [
       shapeDef,
@@ -499,82 +515,148 @@ function applyLinkTemplates(diagram) {
     ];
   }
 
+  // ---------- HTML context menu con scroll y mejor posicionamiento ----------
+  const htmlMenuInfo = $(go.HTMLInfo, {
+    show: (obj, diagram, tool) => {
+      const part = obj.part;
+      const data = part?.data || {};
+      const cat = data.category || "association";
+
+      scroller.innerHTML = "";
+
+      const mkItem = (label, onClick, { checked = false, mini = false } = {}) => {
+        const div = document.createElement("div");
+        div.className = "gojs-item" + (mini ? " gojs-mini" : "");
+        const chk = document.createElement("span");
+        chk.className = checked ? "gojs-check" : "gojs-spacer";
+        chk.textContent = checked ? "✓" : "";
+        const text = document.createElement("span");
+        text.textContent = label;
+        div.appendChild(chk);
+        div.appendChild(text);
+        div.onclick = (ev) => {
+          ev.preventDefault();
+          onClick();
+          htmlMenuInfo.hide(diagram, tool);
+        };
+        return div;
+      };
+      const mkSep = () => {
+        const d = document.createElement("div");
+        d.className = "gojs-sep";
+        return d;
+      };
+      const mkTitle = (t) => {
+        const d = document.createElement("div");
+        d.className = "gojs-title";
+        d.textContent = t;
+        return d;
+      };
+
+      // Tipos UML
+      scroller.appendChild(mkItem("Association", () => setCat("association")(tool, obj), { checked: cat === "association" }));
+      scroller.appendChild(mkItem("Aggregation ◊", () => setCat("aggregation")(tool, obj), { checked: cat === "aggregation" }));
+      scroller.appendChild(mkItem("Composition ♦", () => setCat("composition")(tool, obj), { checked: cat === "composition" }));
+      scroller.appendChild(mkItem("Generalization ▷", () => setCat("generalization")(tool, obj), { checked: cat === "generalization" }));
+      scroller.appendChild(mkItem("Realization --▷", () => setCat("realization")(tool, obj), { checked: cat === "realization" }));
+      scroller.appendChild(mkItem("Dependency --▷", () => setCat("dependency")(tool, obj), { checked: cat === "dependency" }));
+
+      scroller.appendChild(mkSep());
+      scroller.appendChild(mkTitle("Cardinalidad"));
+
+      // Cardinalidades
+      const mul = (a, b) => () => setMul(a, b)(tool, obj);
+      [
+        ["1", "1"], ["1", "*"], ["*", "1"], ["*", "*"],
+        ["0..1", "1"], ["0..1", "*"], ["1", "0..1"], ["*", "0..1"],
+        ["0..*", "1"], ["1", "0..*"], ["0..*", "0..*"],
+      ].forEach(([a, b]) => {
+        scroller.appendChild(mkItem(`${a} — ${b}`, mul(a, b), { mini: true }));
+      });
+
+      scroller.appendChild(mkSep());
+      scroller.appendChild(mkItem("Limpiar cardinalidad", () => setMul("", "")(tool, obj), { mini: true }));
+      scroller.appendChild(
+        mkItem("Intercambiar lados", () => {
+          const m = diagram.model, d = part.data;
+          m.startTransaction("swap multiplicity");
+          const a = d.fromMultiplicity || "", b = d.toMultiplicity || "";
+          m.setDataProperty(d, "fromMultiplicity", b);
+          m.setDataProperty(d, "toMultiplicity", a);
+          m.commitTransaction("swap multiplicity");
+        }, { mini: true })
+      );
+
+      // ====== POSICIONAMIENTO CERCA DEL CLICK ======
+      const vp = diagram.lastInput.viewPoint;
+      const rect = diagram.div.getBoundingClientRect();
+      let x = rect.left + window.pageXOffset + vp.x + 4;
+      let y = rect.top + window.pageYOffset + vp.y + 4;
+
+      // Evitar que el menú se salga de la ventana
+      menuDiv.classList.remove("hidden");
+      const mw = menuDiv.offsetWidth;
+      const mh = menuDiv.offsetHeight;
+      const vw = window.innerWidth + window.pageXOffset;
+      const vh = window.innerHeight + window.pageYOffset;
+
+      if (x + mw > vw - 8) x = Math.max(window.pageXOffset + 8, vw - mw - 8);
+      if (y + mh > vh - 8) y = Math.max(window.pageYOffset + 8, vh - mh - 8);
+
+      menuDiv.style.left = `${x}px`;
+      menuDiv.style.top = `${y}px`;
+    },
+    hide: () => { menuDiv.classList.add("hidden"); }
+  });
+
+  // Cerrar si clic fuera
+  document.addEventListener("mousedown", (e) => {
+    if (!menuDiv.classList.contains("hidden") && !menuDiv.contains(e.target)) {
+      menuDiv.classList.add("hidden");
+    }
+  });
+
+  // ---------- plantillas de enlaces ----------
   diagram.linkTemplateMap.add(
     "association",
-    $(
-      go.Link,
-      baseLink,
-      { contextMenu: linkContextMenu },
+    $(go.Link, baseLink, new go.Binding("points").makeTwoWay(),
+      { contextMenu: htmlMenuInfo },
       ...withMultiplicity($(go.Shape, normal), $(go.Shape, { toArrow: "" }))
     )
   );
-
   diagram.linkTemplateMap.add(
     "aggregation",
-    $(
-      go.Link,
-      baseLink,
-      { contextMenu: linkContextMenu },
-      ...withMultiplicity(
-        $(go.Shape, normal),
-        $(go.Shape, { fromArrow: "Diamond", fill: "white", stroke: "#111827" })
-      )
+    $(go.Link, baseLink, new go.Binding("points").makeTwoWay(),
+      { contextMenu: htmlMenuInfo },
+      ...withMultiplicity($(go.Shape, normal), $(go.Shape, { fromArrow: "Diamond", fill: "white", stroke: "#111827" }))
     )
   );
-
   diagram.linkTemplateMap.add(
     "composition",
-    $(
-      go.Link,
-      baseLink,
-      { contextMenu: linkContextMenu },
-      ...withMultiplicity(
-        $(go.Shape, normal),
-        $(go.Shape, {
-          fromArrow: "Diamond",
-          fill: "#111827",
-          stroke: "#111827",
-        })
-      )
+    $(go.Link, baseLink, new go.Binding("points").makeTwoWay(),
+      { contextMenu: htmlMenuInfo },
+      ...withMultiplicity($(go.Shape, normal), $(go.Shape, { fromArrow: "Diamond", fill: "#111827", stroke: "#111827" }))
     )
   );
-
   diagram.linkTemplateMap.add(
     "generalization",
-    $(
-      go.Link,
-      baseLink,
-      { contextMenu: linkContextMenu },
-      ...withMultiplicity(
-        $(go.Shape, normal),
-        $(go.Shape, { toArrow: "Triangle", fill: "white", stroke: "#111827" })
-      )
+    $(go.Link, baseLink, new go.Binding("points").makeTwoWay(),
+      { contextMenu: htmlMenuInfo },
+      ...withMultiplicity($(go.Shape, normal), $(go.Shape, { toArrow: "Triangle", fill: "white", stroke: "#111827" }))
     )
   );
-
   diagram.linkTemplateMap.add(
     "realization",
-    $(
-      go.Link,
-      baseLink,
-      { contextMenu: linkContextMenu },
-      ...withMultiplicity(
-        $(go.Shape, dashed),
-        $(go.Shape, { toArrow: "Triangle", fill: "white", stroke: "#111827" })
-      )
+    $(go.Link, baseLink, new go.Binding("points").makeTwoWay(),
+      { contextMenu: htmlMenuInfo },
+      ...withMultiplicity($(go.Shape, dashed), $(go.Shape, { toArrow: "Triangle", fill: "white", stroke: "#111827" }))
     )
   );
-
   diagram.linkTemplateMap.add(
     "dependency",
-    $(
-      go.Link,
-      baseLink,
-      { contextMenu: linkContextMenu },
-      ...withMultiplicity(
-        $(go.Shape, dashed),
-        $(go.Shape, { toArrow: "OpenTriangle" })
-      )
+    $(go.Link, baseLink, new go.Binding("points").makeTwoWay(),
+      { contextMenu: htmlMenuInfo },
+      ...withMultiplicity($(go.Shape, dashed), $(go.Shape, { toArrow: "OpenTriangle" }))
     )
   );
 
