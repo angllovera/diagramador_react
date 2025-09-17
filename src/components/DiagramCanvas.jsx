@@ -5,6 +5,8 @@ import { createDiagram } from "./gojsTemplates";
 import { useDiagram } from "../context/DiagramContext";
 import { getDiagram, updateDiagram } from "../api/diagrams";
 import { useParams, useSearchParams } from "react-router-dom";
+import { getSocket } from "../api/socket";
+import { nanoid } from "nanoid";
 
 export default function DiagramCanvas() {
   const { registerDiagram, setModelJson, modelJson } = useDiagram();
@@ -12,17 +14,17 @@ export default function DiagramCanvas() {
   const [loading, setLoading] = useState(true);
   const initialLoadedRef = useRef(false);
   const debounceRef = useRef(null);
-  const lastAppliedJsonRef = useRef(""); // ← para evitar aplicar 2 veces el mismo JSON
+  const lastAppliedJsonRef = useRef("");
   const isApplyingFromJsonRef = useRef(false);
   const isLoadingRef = useRef(false);
+  const socketRef = useRef(null);
+  const clientIdRef = useRef(nanoid());
 
-  // ---- ID del diagrama: ruta > query (soporta ambos)
-  const { id: idFromRoute } = useParams(); // /diagram/:id
+  const { id: idFromRoute } = useParams();
   const [qs] = useSearchParams();
   const idFromQuery = qs.get("diagramId") || qs.get("did") || "";
   const diagramId = idFromRoute || idFromQuery || "";
 
-  // Hoja Oficio 8.5" x 13"
   const PAGE_STYLE = { width: "8.5in", height: "13in" };
   const PAGE_PX = { w: 8.5 * 96, h: 13 * 96 };
 
@@ -31,7 +33,12 @@ export default function DiagramCanvas() {
       const d = createDiagram?.();
       if (!d) return null;
 
-      // Undo/redo
+      // ✅ habilitar edición/arrastre (por si en templates no quedó explícito)
+      d.isEnabled = true;
+      d.isReadOnly = false;
+      d.allowMove = true;
+      d.toolManager.draggingTool.isEnabled = true;
+
       d.undoManager.isEnabled = true;
 
       // Estética / navegación
@@ -56,8 +63,9 @@ export default function DiagramCanvas() {
         go.CommandHandler.prototype.doKeyDown.call(this);
       };
 
-      // Registrar y escuchar cambios (autosave con debounce)
+      // Guardado + Realtime (con incrementales)
       const onModelChanged = (e) => {
+        // Envía solo al final de cada transacción para no spamear
         if (!e.isTransactionFinished) return;
         if (d.undoManager.isUndoingRedoing) return;
         if (!initialLoadedRef.current) return;
@@ -65,36 +73,19 @@ export default function DiagramCanvas() {
         if (isApplyingFromJsonRef.current) return;
 
         const jsonStr = d.model.toJson();
+
         let snapshot;
-        try {
-          snapshot = JSON.parse(jsonStr);
-        } catch {
-          snapshot = {};
-        }
+        try { snapshot = JSON.parse(jsonStr); } catch { snapshot = {}; }
 
         const hasVisuals = d.nodes.count > 0 || d.links.count > 0;
-        const isEmpty =
-          !snapshot.nodeDataArray?.length && !snapshot.linkDataArray?.length;
+        const isEmpty = !snapshot.nodeDataArray?.length && !snapshot.linkDataArray?.length;
 
-        // No sobrescribas con vacío si hay algo visible
-        if (isEmpty && hasVisuals) {
-          console.warn(
-            "[save] cancelado: payload vacío con elementos visibles"
-          );
-          return;
-        }
-        // No sobrescribas con vacío si el último aplicado tenía datos
+        if (isEmpty && hasVisuals) return;
+
         try {
           const last = JSON.parse(lastAppliedJsonRef.current || "{}");
-          const lastHadData =
-            (last?.nodeDataArray?.length || 0) > 0 ||
-            (last?.linkDataArray?.length || 0) > 0;
-          if (isEmpty && lastHadData) {
-            console.warn(
-              "[save] cancelado: intento de vaciar un modelo previo con datos"
-            );
-            return;
-          }
+          const lastHadData = (last?.nodeDataArray?.length || 0) > 0 || (last?.linkDataArray?.length || 0) > 0;
+          if (isEmpty && lastHadData) return;
         } catch {}
 
         setModelJson(JSON.stringify(snapshot, null, 2));
@@ -103,11 +94,27 @@ export default function DiagramCanvas() {
         debounceRef.current = setTimeout(async () => {
           try {
             if (!diagramId) return;
-            await updateDiagram(diagramId, { modelJson: jsonStr }); // ← manda STRING GoJS
+            await updateDiagram(diagramId, { modelJson: jsonStr });
           } catch (err) {
             console.error("Error guardando diagrama:", err);
           }
         }, 300);
+
+        // 🔴 Realtime incremental
+        try {
+          const sock = socketRef.current;
+          if (sock && diagramId) {
+            const incrementalJson = d.model.toIncrementalJson(e); // ← diff de esta transacción
+            sock.emit("diagram:change", {
+              diagramId,
+              incrementalJson,              // 👈 ENVIAR diff
+              clientVersion: Date.now(),
+              source: clientIdRef.current,
+            });
+          }
+        } catch (err) {
+          console.warn("No pude emitir cambio realtime:", err);
+        }
       };
 
       d.addModelChangedListener(onModelChanged);
@@ -117,9 +124,9 @@ export default function DiagramCanvas() {
       return d;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [diagramId]); // si cambias de diagrama, se re-inicia
+  }, [diagramId]);
 
-  // Carga inicial del modelo (SIEMPRE después de que exista `diagram`)
+  // Carga inicial del modelo
   useEffect(() => {
     if (!diagram) return;
 
@@ -139,22 +146,27 @@ export default function DiagramCanvas() {
           lastAppliedJsonRef.current = JSON.stringify(empty);
         } else {
           const dto = await getDiagram(diagramId);
-          // ⚠️ Puede venir como string; parsea y normaliza
           const raw = dto?.modelJson;
           let model;
-          try {
-            model = typeof raw === "string" ? JSON.parse(raw) : raw ?? {};
-          } catch {
-            model = {};
-          }
-          if (!model.class || model.class === "GraphLinksModel")
-            model.class = "go.GraphLinksModel";
+          try { model = typeof raw === "string" ? JSON.parse(raw) : raw ?? {}; }
+          catch { model = {}; }
+
+          if (!model.class || model.class === "GraphLinksModel") model.class = "go.GraphLinksModel";
           if (!Array.isArray(model.nodeDataArray)) model.nodeDataArray = [];
           if (!Array.isArray(model.linkDataArray)) model.linkDataArray = [];
           if (!model.nodeKeyProperty) model.nodeKeyProperty = "key";
           if (!model.linkKeyProperty) model.linkKeyProperty = "key";
-          if (!model.linkCategoryProperty)
-            model.linkCategoryProperty = "category";
+          if (!model.linkCategoryProperty) model.linkCategoryProperty = "category";
+
+          // (opcional) migrar posiciones antiguas a 'loc'
+          for (const n of model.nodeDataArray) {
+            if (!n.loc && (n.position || n.location)) {
+              const p = n.position || n.location;
+              if (typeof p === "string") n.loc = p;
+              else if (p && typeof p.x === "number" && typeof p.y === "number") n.loc = `${p.x} ${p.y}`;
+            }
+          }
+
           diagram.animationManager.isEnabled = false;
           diagram.model = go.Model.fromJson(model);
           lastAppliedJsonRef.current = JSON.stringify(model);
@@ -181,6 +193,7 @@ export default function DiagramCanvas() {
     };
   }, [diagram, diagramId, setModelJson]);
 
+  // Aplicar cambios de modelJson externo (editor/otra fuente)
   useEffect(() => {
     if (!diagram) return;
 
@@ -190,12 +203,10 @@ export default function DiagramCanvas() {
     if (txt === lastAppliedJsonRef.current) return;
 
     try {
-      let obj =
-        typeof modelJson === "string" ? JSON.parse(modelJson) : modelJson;
+      let obj = typeof modelJson === "string" ? JSON.parse(modelJson) : modelJson;
       if (!obj || typeof obj !== "object") return;
 
-      if (!obj.class || obj.class === "GraphLinksModel")
-        obj.class = "go.GraphLinksModel";
+      if (!obj.class || obj.class === "GraphLinksModel") obj.class = "go.GraphLinksModel";
       obj.nodeKeyProperty = obj.nodeKeyProperty || "key";
       obj.linkKeyProperty = obj.linkKeyProperty || "key";
       obj.linkCategoryProperty = obj.linkCategoryProperty || "category";
@@ -212,8 +223,7 @@ export default function DiagramCanvas() {
       if (diagram.nodes.count > 0) diagram.zoomToFit();
       diagram.animationManager.isEnabled = wasAnim;
 
-      lastAppliedJsonRef.current =
-        typeof modelJson === "string" ? modelJson : JSON.stringify(obj);
+      lastAppliedJsonRef.current = typeof modelJson === "string" ? modelJson : JSON.stringify(obj);
       initialLoadedRef.current = prev;
     } catch (e) {
       console.error("JSON inválido al aplicar en el diagrama:", e);
@@ -243,9 +253,59 @@ export default function DiagramCanvas() {
       }
     };
     window.addEventListener("keydown", onKey, { capture: true });
-    return () =>
-      window.removeEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, [diagram]);
+
+  // Realtime con Socket.IO
+  useEffect(() => {
+    if (!diagram) return;
+    if (!diagramId) return;
+
+    const socket = getSocket();
+    socketRef.current = socket;
+
+    socket.emit("diagram:join", { diagramId, userId: "anon" });
+
+    const onRemoteChange = ({ diagramId: dId, incrementalJson, modelJson, source }) => {
+      if (dId !== diagramId) return;
+      if (source && source === clientIdRef.current) return;
+
+      try {
+        isApplyingFromJsonRef.current = true;
+
+        const wasAnim = diagram.animationManager.isEnabled;
+        diagram.animationManager.isEnabled = false;
+
+        if (incrementalJson) {
+          // ✅ aplicar diff (suave, sin parpadeos)
+          diagram.commit((d) => {
+            d.model.applyIncrementalJson(incrementalJson);
+          }, "apply incremental");
+        } else if (modelJson) {
+          // Fallback legacy: reemplazar todo (no ideal)
+          diagram.model = go.Model.fromJson(JSON.parse(modelJson));
+        }
+
+        if (diagram.nodes.count > 0) diagram.zoomToFit();
+        diagram.animationManager.isEnabled = wasAnim;
+
+        if (modelJson) {
+          lastAppliedJsonRef.current = modelJson;
+          setModelJson(JSON.stringify(JSON.parse(modelJson), null, 2));
+        }
+      } catch (e) {
+        console.error("No pude aplicar cambio remoto:", e);
+      } finally {
+        isApplyingFromJsonRef.current = false;
+      }
+    };
+
+    socket.on("diagram:changed", onRemoteChange);
+
+    return () => {
+      socket.off("diagram:changed", onRemoteChange);
+    };
+  }, [diagram, diagramId, setModelJson]);
 
   return (
     <div
@@ -269,14 +329,12 @@ export default function DiagramCanvas() {
           margin: "48px 0 120px",
         }}
       >
-        {/* IMPORTANTE: el ReactDiagram se renderiza SIEMPRE */}
         <ReactDiagram
           initDiagram={initDiagram}
           divClassName="w-100 h-100"
           style={{ width: "100%", height: "100%" }}
         />
 
-        {/* Overlay de carga, sin bloquear el montaje del diagram */}
         {loading && (
           <div
             style={{
@@ -287,6 +345,7 @@ export default function DiagramCanvas() {
               placeItems: "center",
               fontSize: 16,
               fontWeight: 500,
+              pointerEvents: "none", // 👈 no bloquea el canvas
             }}
           >
             Cargando diagrama…

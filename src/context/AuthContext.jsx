@@ -28,6 +28,7 @@ export function AuthProvider({ children }) {
     })();
   }, []);
 
+  // Login normal: guarda accessToken y obtiene perfil
   const doLogin = async (email, password) => {
     const data = await login({ email, password });
     if (data?.accessToken) setAccessToken(data.accessToken);
@@ -36,11 +37,25 @@ export function AuthProvider({ children }) {
     return data;
   };
 
-  const doRegister = async (name, email, password) => {
+  /**
+   * Registro:
+   * - Por defecto NO inicia sesión (pensado para redirigir a /login).
+   * - Si algún día quieres login automático tras registro, llama doRegister(..., true)
+   */
+  const doRegister = async (name, email, password, autoLogin = false) => {
     const data = await register({ name, email, password });
-    if (data?.accessToken) setAccessToken(data.accessToken);
-    const me = await getMe();
-    setUser(me?.user ?? me ?? null);
+
+    if (autoLogin && data?.accessToken) {
+      // 🔐 Camino alternativo: login automático
+      setAccessToken(data.accessToken);
+      const me = await getMe();
+      setUser(me?.user ?? me ?? null);
+    } else {
+      // 🧹 Asegúrate de no dejar tokens colgados
+      setAccessToken(null);
+      setUser(null);
+    }
+
     return data;
   };
 
