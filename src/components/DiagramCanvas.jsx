@@ -7,11 +7,14 @@ import { getDiagram, updateDiagram } from "../api/diagrams";
 import { useParams, useSearchParams } from "react-router-dom";
 import { getSocket } from "../api/socket";
 import { nanoid } from "nanoid";
+import AIChatModal from "./AIChatModal";
+import { actOnDiagram } from "../api/ai";
 
 export default function DiagramCanvas() {
-  const { registerDiagram, setModelJson, modelJson } = useDiagram();
+  const { /* registerDiagram, */ setModelJson, modelJson } = useDiagram();
   const [diagram, setDiagram] = useState(null);
   const [loading, setLoading] = useState(true);
+
   const initialLoadedRef = useRef(false);
   const debounceRef = useRef(null);
   const lastAppliedJsonRef = useRef("");
@@ -19,6 +22,9 @@ export default function DiagramCanvas() {
   const isLoadingRef = useRef(false);
   const socketRef = useRef(null);
   const clientIdRef = useRef(nanoid());
+
+  const [chatOpen, setChatOpen] = useState(false);
+  const aiRunIdPendingRef = useRef(null);
 
   const { id: idFromRoute } = useParams();
   const [qs] = useSearchParams();
@@ -28,17 +34,57 @@ export default function DiagramCanvas() {
   const PAGE_STYLE = { width: "8.5in", height: "13in" };
   const PAGE_PX = { w: 8.5 * 96, h: 13 * 96 };
 
+  // 👉 ref del contenedor del lienzo para posicionar el botón fijo
+  const canvasCardRef = useRef(null);
+  const [fabPos, setFabPos] = useState({
+    top: -9999,
+    left: -9999,
+    visible: false,
+  });
+
+  // Calcula posición fija del botón en relación al lienzo
+  useEffect(() => {
+    const BTN = 56; // tamaño del botón
+    const M = 12; // margen interno al borde del lienzo
+
+    const update = () => {
+      const el = canvasCardRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const top = Math.max(r.top + M, M);
+      const left = Math.min(r.right - BTN - M, window.innerWidth - BTN - M);
+      // visible si el lienzo está en el viewport
+      const visible = r.bottom > 0 && r.top < window.innerHeight;
+      setFabPos({ top, left, visible });
+    };
+
+    // actualizar en mount y en cada scroll/resize
+    update();
+    const onScroll = () => requestAnimationFrame(update);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+
+    // por si el tamaño del contenedor cambia (zoomToFit, etc.)
+    const ro = new ResizeObserver(update);
+    if (canvasCardRef.current) ro.observe(canvasCardRef.current);
+
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      ro.disconnect();
+    };
+  }, []);
+
   const initDiagram = useMemo(() => {
     return () => {
       const d = createDiagram?.();
       if (!d) return null;
 
-      // ✅ habilitar edición/arrastre (por si en templates no quedó explícito)
+      // Habilitar edición y arrastre
       d.isEnabled = true;
       d.isReadOnly = false;
       d.allowMove = true;
       d.toolManager.draggingTool.isEnabled = true;
-
       d.undoManager.isEnabled = true;
 
       // Estética / navegación
@@ -63,9 +109,8 @@ export default function DiagramCanvas() {
         go.CommandHandler.prototype.doKeyDown.call(this);
       };
 
-      // Guardado + Realtime (con incrementales)
+      // Guardado + realtime incremental
       const onModelChanged = (e) => {
-        // Envía solo al final de cada transacción para no spamear
         if (!e.isTransactionFinished) return;
         if (d.undoManager.isUndoingRedoing) return;
         if (!initialLoadedRef.current) return;
@@ -75,16 +120,22 @@ export default function DiagramCanvas() {
         const jsonStr = d.model.toJson();
 
         let snapshot;
-        try { snapshot = JSON.parse(jsonStr); } catch { snapshot = {}; }
+        try {
+          snapshot = JSON.parse(jsonStr);
+        } catch {
+          snapshot = {};
+        }
 
         const hasVisuals = d.nodes.count > 0 || d.links.count > 0;
-        const isEmpty = !snapshot.nodeDataArray?.length && !snapshot.linkDataArray?.length;
-
+        const isEmpty =
+          !snapshot.nodeDataArray?.length && !snapshot.linkDataArray?.length;
         if (isEmpty && hasVisuals) return;
 
         try {
           const last = JSON.parse(lastAppliedJsonRef.current || "{}");
-          const lastHadData = (last?.nodeDataArray?.length || 0) > 0 || (last?.linkDataArray?.length || 0) > 0;
+          const lastHadData =
+            (last?.nodeDataArray?.length || 0) > 0 ||
+            (last?.linkDataArray?.length || 0) > 0;
           if (isEmpty && lastHadData) return;
         } catch {}
 
@@ -94,20 +145,24 @@ export default function DiagramCanvas() {
         debounceRef.current = setTimeout(async () => {
           try {
             if (!diagramId) return;
-            await updateDiagram(diagramId, { modelJson: jsonStr });
+            await updateDiagram(diagramId, {
+              modelJson: jsonStr,
+              aiRunId: aiRunIdPendingRef.current || null,
+            });
+            aiRunIdPendingRef.current = null;
           } catch (err) {
             console.error("Error guardando diagrama:", err);
           }
         }, 300);
 
-        // 🔴 Realtime incremental
+        // Realtime incremental
         try {
           const sock = socketRef.current;
           if (sock && diagramId) {
-            const incrementalJson = d.model.toIncrementalJson(e); // ← diff de esta transacción
+            const incrementalJson = d.model.toIncrementalJson(e);
             sock.emit("diagram:change", {
               diagramId,
-              incrementalJson,              // 👈 ENVIAR diff
+              incrementalJson,
               clientVersion: Date.now(),
               source: clientIdRef.current,
             });
@@ -148,22 +203,28 @@ export default function DiagramCanvas() {
           const dto = await getDiagram(diagramId);
           const raw = dto?.modelJson;
           let model;
-          try { model = typeof raw === "string" ? JSON.parse(raw) : raw ?? {}; }
-          catch { model = {}; }
+          try {
+            model = typeof raw === "string" ? JSON.parse(raw) : raw ?? {};
+          } catch {
+            model = {};
+          }
 
-          if (!model.class || model.class === "GraphLinksModel") model.class = "go.GraphLinksModel";
+          if (!model.class || model.class === "GraphLinksModel")
+            model.class = "go.GraphLinksModel";
           if (!Array.isArray(model.nodeDataArray)) model.nodeDataArray = [];
           if (!Array.isArray(model.linkDataArray)) model.linkDataArray = [];
           if (!model.nodeKeyProperty) model.nodeKeyProperty = "key";
           if (!model.linkKeyProperty) model.linkKeyProperty = "key";
-          if (!model.linkCategoryProperty) model.linkCategoryProperty = "category";
+          if (!model.linkCategoryProperty)
+            model.linkCategoryProperty = "category";
 
-          // (opcional) migrar posiciones antiguas a 'loc'
+          // migrar posiciones antiguas a 'loc' (opcional)
           for (const n of model.nodeDataArray) {
             if (!n.loc && (n.position || n.location)) {
               const p = n.position || n.location;
               if (typeof p === "string") n.loc = p;
-              else if (p && typeof p.x === "number" && typeof p.y === "number") n.loc = `${p.x} ${p.y}`;
+              else if (p && typeof p.x === "number" && typeof p.y === "number")
+                n.loc = `${p.x} ${p.y}`;
             }
           }
 
@@ -199,14 +260,15 @@ export default function DiagramCanvas() {
 
     const txt = (modelJson ?? "").trim();
     if (!txt) return;
-
     if (txt === lastAppliedJsonRef.current) return;
 
     try {
-      let obj = typeof modelJson === "string" ? JSON.parse(modelJson) : modelJson;
+      let obj =
+        typeof modelJson === "string" ? JSON.parse(modelJson) : modelJson;
       if (!obj || typeof obj !== "object") return;
 
-      if (!obj.class || obj.class === "GraphLinksModel") obj.class = "go.GraphLinksModel";
+      if (!obj.class || obj.class === "GraphLinksModel")
+        obj.class = "go.GraphLinksModel";
       obj.nodeKeyProperty = obj.nodeKeyProperty || "key";
       obj.linkKeyProperty = obj.linkKeyProperty || "key";
       obj.linkCategoryProperty = obj.linkCategoryProperty || "category";
@@ -223,7 +285,8 @@ export default function DiagramCanvas() {
       if (diagram.nodes.count > 0) diagram.zoomToFit();
       diagram.animationManager.isEnabled = wasAnim;
 
-      lastAppliedJsonRef.current = typeof modelJson === "string" ? modelJson : JSON.stringify(obj);
+      lastAppliedJsonRef.current =
+        typeof modelJson === "string" ? modelJson : JSON.stringify(obj);
       initialLoadedRef.current = prev;
     } catch (e) {
       console.error("JSON inválido al aplicar en el diagrama:", e);
@@ -253,7 +316,8 @@ export default function DiagramCanvas() {
       }
     };
     window.addEventListener("keydown", onKey, { capture: true });
-    return () => window.removeEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true });
   }, [diagram]);
 
   // Realtime con Socket.IO
@@ -266,7 +330,12 @@ export default function DiagramCanvas() {
 
     socket.emit("diagram:join", { diagramId, userId: "anon" });
 
-    const onRemoteChange = ({ diagramId: dId, incrementalJson, modelJson, source }) => {
+    const onRemoteChange = ({
+      diagramId: dId,
+      incrementalJson,
+      modelJson,
+      source,
+    }) => {
       if (dId !== diagramId) return;
       if (source && source === clientIdRef.current) return;
 
@@ -277,12 +346,10 @@ export default function DiagramCanvas() {
         diagram.animationManager.isEnabled = false;
 
         if (incrementalJson) {
-          // ✅ aplicar diff (suave, sin parpadeos)
           diagram.commit((d) => {
             d.model.applyIncrementalJson(incrementalJson);
           }, "apply incremental");
         } else if (modelJson) {
-          // Fallback legacy: reemplazar todo (no ideal)
           diagram.model = go.Model.fromJson(JSON.parse(modelJson));
         }
 
@@ -301,12 +368,101 @@ export default function DiagramCanvas() {
     };
 
     socket.on("diagram:changed", onRemoteChange);
-
-    return () => {
-      socket.off("diagram:changed", onRemoteChange);
-    };
+    return () => socket.off("diagram:changed", onRemoteChange);
   }, [diagram, diagramId, setModelJson]);
 
+  // === 🔧 funciones usadas en JSX: declaradas ANTES del return ===
+  function applyOps(d, payload) {
+    if (!d || !payload) return;
+    const ops = Array.isArray(payload.ops) ? payload.ops : [];
+    const m = d.model;
+
+    m.startTransaction("ai upsert");
+
+    for (const op of ops) {
+      if (op.type === "add_classes" && Array.isArray(op.classes)) {
+        for (const c of op.classes) {
+          if (!c || !c.name) continue;
+          const key = String(c.name).trim();
+          const exists = m.findNodeDataForKey(key);
+          const nodeData = {
+            key,
+            category: "class",
+            name: c.name,
+            stereotype: c.stereotype || undefined,
+            abstract: !!c.abstract,
+            attributes: Array.isArray(c.attributes) ? c.attributes : [],
+            operations: Array.isArray(c.operations) ? c.operations : [],
+            loc: c.loc || undefined,
+            size: c.size || undefined,
+          };
+          if (exists) {
+            Object.keys(nodeData).forEach((k) =>
+              m.setDataProperty(exists, k, nodeData[k])
+            );
+          } else {
+            m.addNodeData(nodeData);
+          }
+        }
+      }
+
+      if (op.type === "relate" && Array.isArray(op.relations)) {
+        for (const r of op.relations) {
+          if (!r || !r.from || !r.to) continue;
+          const from = String(r.from).trim();
+          const to = String(r.to).trim();
+          const category = r.type || "association";
+
+          if (!m.findNodeDataForKey(from))
+            m.addNodeData({ key: from, category: "class", name: from });
+          if (!m.findNodeDataForKey(to))
+            m.addNodeData({ key: to, category: "class", name: to });
+
+          const dup = Array.from(d.links).some(
+            (l) =>
+              l.data &&
+              l.data.from === from &&
+              l.data.to === to &&
+              (l.data.category || "association") === category
+          );
+          if (!dup) {
+            m.addLinkData({
+              key: `${from}->${to}:${category}`,
+              from,
+              to,
+              category,
+              fromMultiplicity: r.fromMultiplicity || "",
+              toMultiplicity: r.toMultiplicity || "",
+            });
+          }
+        }
+      }
+    }
+
+    m.commitTransaction("ai upsert");
+    if (d.nodes.count > 0) d.zoomToFit();
+  }
+
+  async function handlePrompt(text) {
+    if (!diagram || !diagramId) return;
+
+    try {
+      const resp = await actOnDiagram({
+        diagramId,
+        message: text,
+      });
+
+      aiRunIdPendingRef.current = resp.aiRunId || null;
+
+      // aplicar cambios al diagrama
+      applyOps(diagram, resp);
+    } catch (err) {
+      console.error("Error en actOnDiagram:", err);
+      alert("No pude procesar el prompt.");
+    }
+  }
+
+  // === JSX ===
   return (
     <div
       style={{
@@ -318,6 +474,7 @@ export default function DiagramCanvas() {
       }}
     >
       <div
+        ref={canvasCardRef} // 👈 referencia del contenedor del lienzo
         style={{
           ...PAGE_STYLE,
           position: "relative",
@@ -335,6 +492,40 @@ export default function DiagramCanvas() {
           style={{ width: "100%", height: "100%" }}
         />
 
+        {/* Botón IA — flotante fijado al borde superior-derecho del lienzo */}
+        <button
+          onClick={() => setChatOpen(true)}
+          title="Generar con IA"
+          aria-label="Abrir asistente de IA"
+          style={{
+            position: "fixed", // fijo al viewport
+            top: fabPos.top, // pero posicionado con base al rect del lienzo
+            left: fabPos.left,
+            display: fabPos.visible ? "block" : "none",
+            width: 56,
+            height: 56,
+            borderRadius: "50%",
+            border: "none",
+            cursor: "pointer",
+            boxShadow: "0 8px 20px rgba(0,0,0,.15)",
+            fontSize: 22,
+            fontWeight: 700,
+            background: "#111827",
+            color: "#fff",
+            zIndex: 1000,
+          }}
+        >
+          IA
+        </button>
+
+        {/* Modal de chat */}
+        <AIChatModal
+          open={chatOpen}
+          onClose={() => setChatOpen(false)}
+          onSend={handlePrompt}
+        />
+
+        {/* Overlay loading */}
         {loading && (
           <div
             style={{
@@ -345,7 +536,7 @@ export default function DiagramCanvas() {
               placeItems: "center",
               fontSize: 16,
               fontWeight: 500,
-              pointerEvents: "none", // 👈 no bloquea el canvas
+              pointerEvents: "none",
             }}
           >
             Cargando diagrama…
