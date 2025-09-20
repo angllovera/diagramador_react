@@ -237,14 +237,14 @@ const PALETTE_SETS = {
       key: "ClassTemplate",
       category: "class",
       name: "Clase",
-      attributes: [{ name: "id", type: "uuid", nullable: false }],
+      attributes: [{ name: "id", type: "int", nullable: false }],
     },
     {
       key: "AbstractClass",
       category: "class",
       name: "Abstracto",
       abstract: true,
-      attributes: [{ name: "id", type: "uuid", nullable: false }],
+      attributes: [{ name: "id", type: "int", nullable: false }],
     },
     {
       key: "AssocClass",

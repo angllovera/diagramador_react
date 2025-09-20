@@ -155,8 +155,8 @@ export default function Toolbar() {
     try {
       setBusy((b) => ({ ...b, xmi: true }));
       const res = await fetch(`${apiBase}/api/export/xmi`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model }),
       });
 
@@ -172,39 +172,46 @@ export default function Toolbar() {
 
   async function generateSpring() {
     if (!onDiagramPage) return;
-    const model = assertModel();
+
+    // 1) obtener y normalizar el modelo GoJS actual
+    const parsed = deepParseMaybe(modelJson);
+    const model = normalizeGoJsModel(parsed);
     if (!model) return;
-    const entities = (model.nodeDataArray || [])
-      .filter((n) => n.category === "class")
-      .map((c) => ({
-        name: c.name,
-        fields: (c.attributes || []).map((a) => ({
-          name: a.name,
-          type: a.type,
-          nullable: !!a.nullable,
-          unique: !!a.unique,
-        })),
-      }));
-    const payload = {
-      basePkg: "com.acme.generated",
-      groupId: "com.acme",
-      artifactId: "diagram-api",
-      entities,
-      options: { openapi: true },
-    };
+
+    // 2) pedir groupId / artifactId (puedes migrarlo a un modal propio cuando quieras)
+    const defArtifact = (user?.projectName || "app")
+      .toLowerCase()
+      .replace(/\s+/g, "");
+    const artifactId =
+      window.prompt("ArtifactId (nombre del proyecto Maven):", defArtifact) ||
+      defArtifact;
+    const groupId =
+      window.prompt("GroupId (paquete base Java):", "com.example") ||
+      "com.example";
 
     try {
       setBusy((b) => ({ ...b, spring: true }));
-      const res = await fetch(`${apiBase}/generate/spring`, {
+
+      // si usas auth por token
+      const token = localStorage.getItem("token");
+
+      // 3) llamar a tu endpoint que genera el zip
+      const res = await fetch(`${apiBase}/api/generate/springboot`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ model, groupId, artifactId }),
       });
+
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      // 4) descargar el ZIP
       const blob = await res.blob();
-      downloadBlob(blob, "spring-backend.zip");
+      downloadBlob(blob, `${artifactId}-springboot.zip`);
     } catch (err) {
-      alert("Error al generar Spring: " + err.message);
+      alert("Error al generar Spring Boot: " + (err.message || err));
     } finally {
       setBusy((b) => ({ ...b, spring: false }));
     }
@@ -459,7 +466,7 @@ export default function Toolbar() {
                 onClick={generateSpring}
                 disabled={!hasModel || busy.spring}
               >
-                {busy.spring ? "Generando…" : "Generar Spring"}
+                {busy.spring ? "Generando…" : "Generar Spring Boot"}
               </button>
             </div>
 
