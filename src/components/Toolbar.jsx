@@ -476,7 +476,7 @@ export default function Toolbar() {
                 onClick={suggestAI}
                 disabled={!hasModel || busy.ai}
               >
-                {busy.ai ? "Consultando…" : "Sugerir Atributos (IA)"}
+                {busy.ai ? "Consultando…" : "Imprimir"}
               </button>
             </div>
           </>
