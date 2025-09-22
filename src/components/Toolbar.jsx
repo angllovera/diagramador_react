@@ -271,42 +271,48 @@ export default function Toolbar() {
     }
   }
 
-  async function shareLink() {
-    if (!onDiagramPage) return;
-    const model = assertModel();
-    if (!model) return;
-    try {
-      setBusy((b) => ({ ...b, share: true }));
-      const res = await fetch(`${apiBase}/share`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const url =
-          data.url ||
-          `${window.location.origin}${window.location.pathname}#share=${data.id}`;
-        await navigator.clipboard.writeText(url);
-        alert("🔗 Enlace de compartir copiado al portapapeles");
-        return;
-      }
-    } catch {
-      /* fallback debajo */
-    } finally {
-      setBusy((b) => ({ ...b, share: false }));
-    }
+async function shareLink() {
+  if (!onDiagramPage) return;
 
-    try {
-      const raw = JSON.stringify(model);
-      const base64 = btoa(unescape(encodeURIComponent(raw)));
-      const url = `${location.origin}${location.pathname}#m=${base64}`;
-      await navigator.clipboard.writeText(url);
-      alert("🔗 Enlace copiado (modo sin servidor)");
-    } catch (e) {
-      alert("No se pudo generar el enlace local: " + e.message);
-    }
+  // 1) obtener diagramId desde la URL
+  const u = new URL(window.location.href);
+  let diagramId = u.searchParams.get("id"); // compatibilidad
+  if (!diagramId) {
+    const m = u.pathname.match(/^\/diagram\/([^/?#]+)/); // /diagram/:id
+    if (m) diagramId = decodeURIComponent(m[1]);
   }
+  if (!diagramId) {
+    return alert("No encuentro el id del diagrama en la URL (/diagram/:id o ?id=...)");
+  }
+
+  // 2) pedir permiso/ttl
+  const perm = (window.prompt("Permiso (view/edit):", "edit") || "edit")
+    .toLowerCase() === "view" ? "view" : "edit";
+  const ttl = Number(window.prompt("Vence en horas (ej. 168 = 7 días):", "168")) || 168;
+
+  try {
+    setBusy((b) => ({ ...b, share: true }));
+    const token = localStorage.getItem("accessToken") || localStorage.getItem("token");
+
+    const res = await fetch(`${apiBase}/api/diagrams/${diagramId}/share`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({ permission: perm, ttlHours: ttl })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    await navigator.clipboard.writeText(data.url);
+    alert("🔗 Enlace de compartir copiado al portapapeles");
+  } catch (e) {
+    alert("No se pudo generar el enlace: " + (e.message || e));
+  } finally {
+    setBusy((b) => ({ ...b, share: false }));
+  }
+}
 
   // Atajos: solo en /diagram (limpios según nuevos botones)
   useEffect(() => {

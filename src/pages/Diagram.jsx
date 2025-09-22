@@ -39,6 +39,16 @@ export default function Diagram() {
     return parseModel(raw);
   }, [diagram, EMPTY_MODEL]);
 
+    useEffect(() => {
+    const url = new URL(window.location.href);
+    const share = url.searchParams.get('share');
+    if (share) {
+      localStorage.setItem('shareToken', share);
+      url.searchParams.delete('share');
+      window.history.replaceState({}, '', url.toString());
+    }
+  }, []);
+
   useEffect(() => {
     let alive = true;
     (async () => {
