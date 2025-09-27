@@ -1,3 +1,4 @@
+// src/App.jsx
 import {
   BrowserRouter,
   Routes,
@@ -14,6 +15,7 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import Diagram from "./pages/Diagram";
+import Users from "./pages/Users"; // ✅ NUEVO
 
 function PublicOnly({ children }) {
   const { user, ready } = useAuth();
@@ -26,11 +28,7 @@ function PublicOnly({ children }) {
 function RedirectLegacyDiagram() {
   const loc = useLocation();
   const pid = new URLSearchParams(loc.search).get("pid");
-  return pid ? (
-    <Navigate to={`/diagram/${pid}`} replace />
-  ) : (
-    <Navigate to="/" replace />
-  );
+  return pid ? <Navigate to={`/diagram/${pid}`} replace /> : <Navigate to="/" replace />;
 }
 
 export default function App() {
@@ -76,12 +74,22 @@ export default function App() {
               }
             />
 
-            {/* ✅ ruta correcta */}
+            {/* ruta correcta */}
             <Route
               path="/diagram/:id"
               element={
                 <ProtectedRoute>
                   <Diagram />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* ✅ NUEVA: /users */}
+            <Route
+              path="/users"
+              element={
+                <ProtectedRoute>
+                  <Users />
                 </ProtectedRoute>
               }
             />
