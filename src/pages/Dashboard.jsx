@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import * as Projects from "../api/projects";
@@ -26,10 +26,9 @@ function UMLIcon({ size = 52 }) {
 }
 
 export default function Dashboard() {
-  const { user } = useAuth(); // por si luego filtras por owner
+  const { user } = useAuth();
   const navigate = useNavigate();
 
-  // limpia legacy
   useEffect(() => {
     localStorage.removeItem("diagramas.projects");
   }, []);
@@ -58,7 +57,6 @@ export default function Dashboard() {
     return [...items].sort((a, b) => toDate(b) - toDate(a));
   }, [items]);
 
-  // Abrir diagrama del proyecto: si no hay, crea uno inicial
   async function openDiagram(projectId) {
     try {
       if (typeof Diagrams.listProjectDiagrams !== "function") {
@@ -81,7 +79,6 @@ export default function Dashboard() {
     }
   }
 
-  // Eliminar proyecto
   async function deleteProject(projectId) {
     try {
       const p = items.find((x) => x.id === projectId);
@@ -95,7 +92,6 @@ export default function Dashboard() {
     }
   }
 
-  // Crear proyecto vacío + diagrama inicial
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
@@ -135,37 +131,110 @@ export default function Dashboard() {
 
   function onDragOver(e) { e.preventDefault(); setDragOver(true); }
   function onDragLeave() { setDragOver(false); }
-  function onDrop(e) { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files?.[0]; if (f) setFilePicked(f); }
-  function onPick(e) { const f = e.target.files?.[0]; if (f) setFilePicked(f); e.target.value = ""; }
+  function onDrop(e) { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files?.[0]; if (f) { setImportMsg(""); setFilePicked(f); } }
+  function onPick(e) { const f = e.target.files?.[0]; if (f) { setImportMsg(""); setFilePicked(f); } e.target.value = ""; }
+
+  function baseName(n) { const dot = n.lastIndexOf("."); return dot > 0 ? n.slice(0, dot) : n; }
+  function isJsonFile(f) {
+    const name = (f?.name || "").toLowerCase();
+    return name.endsWith(".json") || (f?.type || "").includes("json");
+  }
+  function readText(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result || ""));
+      fr.onerror = reject;
+      fr.readAsText(file);
+    });
+  }
+  function ensureGojsModel(obj) {
+    let model = obj;
+
+    if (model && typeof model === "object" && "modelJson" in model) {
+      const raw = model.modelJson;
+      try { model = typeof raw === "string" ? JSON.parse(raw) : raw || {}; }
+      catch { model = raw || {}; }
+    }
+    if (typeof model === "string") {
+      try { model = JSON.parse(model); } catch { model = {}; }
+    }
+
+    if (!model || typeof model !== "object") model = {};
+    if (!model.class || model.class === "GraphLinksModel") model.class = "go.GraphLinksModel";
+    if (!Array.isArray(model.nodeDataArray)) model.nodeDataArray = [];
+    if (!Array.isArray(model.linkDataArray)) model.linkDataArray = [];
+    if (!model.nodeKeyProperty) model.nodeKeyProperty = "key";
+    if (!model.linkKeyProperty) model.linkKeyProperty = "key";
+    if (!model.linkCategoryProperty) model.linkCategoryProperty = "category";
+
+    for (const n of model.nodeDataArray) {
+      if (!n.loc && (n.position || n.location)) {
+        const p = n.position || n.location;
+        if (typeof p === "string") n.loc = p;
+        else if (p && typeof p.x === "number" && typeof p.y === "number") n.loc = `${p.x} ${p.y}`;
+      }
+    }
+    return model;
+  }
+
+  async function createFromJsonFile(file) {
+    const txt = await readText(file);
+    let parsed;
+    try { parsed = JSON.parse(txt); } catch { parsed = txt; }
+    const model = ensureGojsModel(parsed);
+
+    const dtoName =
+      (parsed && typeof parsed === "object" && (parsed.name || parsed.projectName || parsed.title)) ||
+      baseName(file.name);
+
+    const project = await Projects.createProject({ name: String(dtoName).trim() || baseName(file.name) });
+    const d = await Diagrams.createDiagram({
+      projectId: project.id,
+      name: (parsed && parsed.diagramName) || "Importado",
+      kind: (parsed && parsed.kind) || "class",
+      modelJson: model, // si tu API necesita string: JSON.stringify(model)
+    });
+    return d;
+  }
 
   async function createFromFile() {
     if (!filePicked) return;
     setImporting(true);
     setImportMsg("");
     try {
+      // 1) JSON local directo al lienzo (y persistido)
+      if (isJsonFile(filePicked)) {
+        const d = await createFromJsonFile(filePicked);
+        setImporting(false); setFilePicked(null);
+        await load();
+        return navigate(`/diagram/${d.id}`);
+      }
+
+      // 2) Otros tipos → backend /api/import/db
       const fd = new FormData();
       fd.append("file", filePicked);
       const res = await fetch(`${apiBase}/api/import/db`, { method: "POST", body: fd, credentials: "include" });
       if (res.ok) {
         const data = await res.json();
         const project = await Projects.createProject({ name: data?.name?.trim() || baseName(filePicked.name) });
+        const model = ensureGojsModel(data?.modelJson ?? {});
         const d = await Diagrams.createDiagram({
           projectId: project.id,
-          name: "Importado",
-          kind: "class",
-          modelJson: data?.modelJson || { class: "go.GraphLinksModel", nodeDataArray: [], linkDataArray: [] },
+          name: data?.diagramName || "Importado",
+          kind: data?.kind || "class",
+          modelJson: model,
         });
         setImporting(false); setFilePicked(null);
         await load();
         return navigate(`/diagram/${d.id}`);
       }
-      // si el backend no tiene /api/import/db, cae al fallback
       setImportMsg("No se pudo procesar el archivo en el backend. Crearé vacío.");
-    } catch {
+    } catch (err) {
+      console.warn("Fallo al usar backend, haré fallback:", err);
       setImportMsg("No se pudo contactar al backend. Crearé vacío.");
     }
 
-    // Fallback: crear vacío
+    // 3) Fallback vacío
     try {
       const project = await Projects.createProject({ name: baseName(filePicked.name) });
       const d = await Diagrams.createDiagram({
@@ -183,8 +252,6 @@ export default function Dashboard() {
       alert("No se pudo crear el proyecto/diagrama.");
     }
   }
-
-  function baseName(n) { const dot = n.lastIndexOf("."); return dot > 0 ? n.slice(0, dot) : n; }
 
   return (
     <div className="min-vh-100 bg-light">
