@@ -212,8 +212,6 @@ export default function Toolbar() {
         {user && (
           <div className="grp" aria-label="App">
             <NavLink className="btn btn-link text-decoration-none" to="/">Dashboard</NavLink>
-            <NavLink className="btn btn-link text-decoration-none" to="/diagram">Diagram</NavLink>
-            {/* ✅ Enlace correcto a /users */}
             <NavLink className="btn btn-link text-decoration-none" to="/users">Usuarios</NavLink>
             <button className="btn btn-outline-danger btn-sm" onClick={doLogout}>
               <i className="bi bi-box-arrow-right me-1" /> Cerrar sesión

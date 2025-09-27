@@ -8,6 +8,7 @@ import {
 } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
+import AdminRoute from "./components/AdminRoute"; // ✅ NUEVO
 import { DiagramProvider } from "./context/DiagramContext";
 import Toolbar from "./components/Toolbar";
 
@@ -15,7 +16,7 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import Diagram from "./pages/Diagram";
-import Users from "./pages/Users"; // ✅ NUEVO
+import Users from "./pages/Users";
 
 function PublicOnly({ children }) {
   const { user, ready } = useAuth();
@@ -84,13 +85,13 @@ export default function App() {
               }
             />
 
-            {/* ✅ NUEVA: /users */}
+            {/* ✅ SOLO ADMIN: /users */}
             <Route
               path="/users"
               element={
-                <ProtectedRoute>
+                <AdminRoute>
                   <Users />
-                </ProtectedRoute>
+                </AdminRoute>
               }
             />
 
