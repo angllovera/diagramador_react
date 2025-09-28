@@ -30,6 +30,13 @@ export default function Toolbar() {
   const location = useLocation();
   const onDiagramPage = location.pathname.startsWith("/diagram") && !__absent;
 
+  // === Admin detection (por rol o por email de ENV) ===
+  const ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL || "admin@admin.com").toLowerCase();
+  const isAdmin = !!user && (
+    (user.role && String(user.role).toLowerCase() === "admin") ||
+    (user.email && String(user.email).toLowerCase() === ADMIN_EMAIL)
+  );
+
   const [busy, setBusy] = useState({ xmi: false, spring: false, print: false, share: false });
   const fileRef = useRef(null);
 
@@ -214,6 +221,7 @@ export default function Toolbar() {
         .tb .grp { display:flex; align-items:center; gap:.25rem; padding:.25rem; border:1px solid #e5e7eb; border-radius:.5rem; background:#fff; }
         .tb .btn { padding:.25rem .5rem; font-size:.875rem; }
         .tb .push { flex: 1 1 auto; }
+        .tb .userchip { display:flex; align-items:center; gap:.375rem; padding:.25rem .5rem; border-radius:.5rem; background:#ffffff; border:1px solid #e5e7eb; font-size:.875rem; }
       `}</style>
 
       <div className="tb">
@@ -258,8 +266,23 @@ export default function Toolbar() {
         {user && (
           <div className="grp" aria-label="App">
             <NavLink className="btn btn-link text-decoration-none" to="/">Dashboard</NavLink>
-            <NavLink className="btn btn-link text-decoration-none" to="/users">Usuarios</NavLink>
-            <button className="btn btn-outline-danger btn-sm" onClick={doLogout}><i className="bi bi-box-arrow-right me-1" /> Cerrar sesión</button>
+
+            {/* 👇 Ocultar 'Usuarios' si no es admin */}
+            {isAdmin && (
+              <NavLink className="btn btn-link text-decoration-none" to="/users">Usuarios</NavLink>
+            )}
+
+            {/* Chip con icono + nombre del usuario actual */}
+            <span className="userchip" title={user.name || "Usuario"}>
+              <i className="bi bi-person-circle" aria-hidden="true" />
+              <span style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {user.name || "Usuario"}
+              </span>
+            </span>
+
+            <button className="btn btn-outline-danger btn-sm" onClick={doLogout}>
+              <i className="bi bi-box-arrow-right me-1" /> Cerrar sesión
+            </button>
           </div>
         )}
       </div>
