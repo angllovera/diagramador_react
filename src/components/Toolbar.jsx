@@ -1,7 +1,9 @@
+// src/components/Toolbar.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useDiagram } from "../context/DiagramContext";
+import { io } from "socket.io-client";
 
 function useOptionalDiagram() {
   let ctx = null;
@@ -30,11 +32,10 @@ export default function Toolbar() {
   const location = useLocation();
   const onDiagramPage = location.pathname.startsWith("/diagram") && !__absent;
 
-  // === Admin detection (por rol o por email de ENV) ===
   const ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL || "admin@admin.com").toLowerCase();
   const isAdmin = !!user && (
-    (user.role && String(user.role).toLowerCase() === "admin") ||
-    (user.email && String(user.email).toLowerCase() === ADMIN_EMAIL)
+    (user?.role && String(user.role).toLowerCase() === "admin") ||
+    (user?.email && String(user.email).toLowerCase() === ADMIN_EMAIL)
   );
 
   const [busy, setBusy] = useState({ xmi: false, spring: false, print: false, share: false });
@@ -45,12 +46,52 @@ export default function Toolbar() {
     []
   );
 
+  // ========= Presencia (solo nombres) =========
+  const [peers, setPeers] = useState([]); // [{id,name,color}]
+  const socket = useMemo(() => io(apiBase, { transports: ["websocket"] }), [apiBase]);
+
+  const diagramId = useMemo(() => {
+    const u = new URL(window.location.href);
+    let id = u.searchParams.get("id");
+    if (!id) {
+      const m = u.pathname.match(/^\/diagram\/([^/?#]+)/);
+      if (m) id = decodeURIComponent(m[1]);
+    }
+    return id || null;
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    if (!onDiagramPage || !diagramId || !user) return;
+    socket.emit("diagram:join", { diagramId, userId: user.id, name: user.name });
+
+    const onPresence = (list) => setPeers(Array.isArray(list) ? list : []);
+    socket.on("diagram:presence", onPresence);
+
+    return () => {
+      socket.emit("diagram:leave", { diagramId });
+      socket.off("diagram:presence", onPresence);
+    };
+  }, [socket, onDiagramPage, diagramId, user]);
+
+  // 👉 Limpiar: solo nombres, sin duplicados, excluirme
+  const visiblePeers = useMemo(() => {
+    const meId = user?.id ?? null;
+    const meName = (user?.name || "").trim().toLowerCase();
+    const seen = new Set();
+    return (peers || [])
+      .map(p => ({ ...p, name: (p?.name || "").trim() }))
+      .filter(p => p.name.length > 0)                             // solo con nombre
+      .filter(p => (meId ? p.id !== meId : p.name.toLowerCase() !== meName)) // sin mí mismo
+      .filter(p => {                                              // sin duplicados
+        const key = p.id ?? p.name.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  }, [peers, user?.id, user?.name]);
+
+  // ========= helpers =========
   const safeParse = (json) => { try { return { ok: true, value: JSON.parse(json) }; } catch (e) { return { ok: false, error: e }; } };
-  const assertModel = () => {
-    const p = safeParse(modelJson);
-    if (!p.ok) { alert("El JSON del diagrama no es válido:\n" + (p.error?.message ?? "")); return null; }
-    return p.value;
-  };
   const downloadBlob = (blob, filename) => {
     const url = URL.createObjectURL(blob);
     const a = Object.assign(document.createElement("a"), { href: url, download: filename });
@@ -131,7 +172,7 @@ export default function Toolbar() {
 
     try {
       setBusy((b) => ({ ...b, spring: true }));
-      const token = localStorage.getItem("token");
+      const token = localStorage.getItem("accessToken") || localStorage.getItem("token");
       const res = await fetch(`${apiBase}/api/generate/springboot`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -150,12 +191,12 @@ export default function Toolbar() {
   async function shareLink() {
     if (!onDiagramPage) return;
     const u = new URL(window.location.href);
-    let diagramId = u.searchParams.get("id");
-    if (!diagramId) {
+    let id = u.searchParams.get("id");
+    if (!id) {
       const m = u.pathname.match(/^\/diagram\/([^/?#]+)/);
-      if (m) diagramId = decodeURIComponent(m[1]);
+      if (m) id = decodeURIComponent(m[1]);
     }
-    if (!diagramId) return alert("No encuentro el id del diagrama en la URL (/diagram/:id o ?id=...)");
+    if (!id) return alert("No encuentro el id del diagrama en la URL (/diagram/:id o ?id=...)");
 
     const perm = (window.prompt("Permiso (view/edit):", "edit") || "edit").toLowerCase() === "view" ? "view" : "edit";
     const ttl = Number(window.prompt("Vence en horas (ej. 168 = 7 días):", "168")) || 168;
@@ -163,7 +204,7 @@ export default function Toolbar() {
     try {
       setBusy((b) => ({ ...b, share: true }));
       const token = localStorage.getItem("accessToken") || localStorage.getItem("token");
-      const res = await fetch(`${apiBase}/api/diagrams/${diagramId}/share`, {
+      const res = await fetch(`${apiBase}/api/diagrams/${id}/share`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ permission: perm, ttlHours: ttl }),
@@ -194,19 +235,16 @@ export default function Toolbar() {
     const onKey = (e) => {
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key.toLowerCase() === "p") {
-        e.preventDefault();
-        e.stopPropagation();
-        doPrint();
-        return;
+        e.preventDefault(); e.stopPropagation(); doPrint(); return;
       }
       if (!mod) return;
       const hit = () => { e.preventDefault(); e.stopPropagation(); };
-      if (e.key.toLowerCase() === "z" && !e.shiftKey) { hit(); undo(); }
+      if (e.key.toLowerCase() === "z" && !e.shiftKey)      { hit(); undo(); }
       else if ((e.key.toLowerCase() === "z" && e.shiftKey) || e.key.toLowerCase() === "y") { hit(); redo(); }
-      else if (e.key.toLowerCase() === "s") { hit(); downloadJSON(); }
-      else if (e.key.toLowerCase() === "o") { hit(); fileRef.current?.click(); }
-      else if (e.key.toLowerCase() === "e") { hit(); exportXMI(); }
-      else if (e.key.toLowerCase() === "g") { hit(); generateSpring(); }
+      else if (e.key.toLowerCase() === "s")               { hit(); downloadJSON(); }
+      else if (e.key.toLowerCase() === "o")               { hit(); fileRef.current?.click(); }
+      else if (e.key.toLowerCase() === "e")               { hit(); exportXMI(); }
+      else if (e.key.toLowerCase() === "g")               { hit(); generateSpring(); }
     };
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
@@ -222,6 +260,9 @@ export default function Toolbar() {
         .tb .btn { padding:.25rem .5rem; font-size:.875rem; }
         .tb .push { flex: 1 1 auto; }
         .tb .userchip { display:flex; align-items:center; gap:.375rem; padding:.25rem .5rem; border-radius:.5rem; background:#ffffff; border:1px solid #e5e7eb; font-size:.875rem; }
+        .tb .peers { display:flex; align-items:center; gap:.25rem; }
+        .tb .peer { display:flex; align-items:center; gap:.35rem; padding:.15rem .45rem; border-radius:999px; border:1px solid #e5e7eb; background:#fff; font-size:.8rem; }
+        .tb .peer .dot { width:8px; height:8px; border-radius:50%; }
       `}</style>
 
       <div className="tb">
@@ -263,16 +304,26 @@ export default function Toolbar() {
 
         <div className="push" />
 
+        {/* 👥 Conectados (solo nombres, sin duplicados, sin mí) */}
+        {onDiagramPage && diagramId && visiblePeers.length > 0 && (
+          <div className="grp peers" aria-label="Conectados">
+            {visiblePeers.map((p, i) => (
+              <span key={`${p.id ?? p.name}-${i}`} className="peer" title={p.name}>
+                <span className="dot" style={{ background: p.color || "#16a34a" }} />
+                <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {p.name}
+                </span>
+              </span>
+            ))}
+          </div>
+        )}
+
         {user && (
           <div className="grp" aria-label="App">
             <NavLink className="btn btn-link text-decoration-none" to="/">Dashboard</NavLink>
+            {isAdmin && <NavLink className="btn btn-link text-decoration-none" to="/users">Usuarios</NavLink>}
 
-            {/* 👇 Ocultar 'Usuarios' si no es admin */}
-            {isAdmin && (
-              <NavLink className="btn btn-link text-decoration-none" to="/users">Usuarios</NavLink>
-            )}
-
-            {/* Chip con icono + nombre del usuario actual */}
+            {/* Chip del usuario actual (nombre) */}
             <span className="userchip" title={user.name || "Usuario"}>
               <i className="bi bi-person-circle" aria-hidden="true" />
               <span style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
