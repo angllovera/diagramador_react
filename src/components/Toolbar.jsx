@@ -118,6 +118,66 @@ export default function Toolbar() {
     return m;
   }
 
+  // === Nombre del proyecto (pequeño) ===
+  const [projectName, setProjectName] = useState(null);
+
+  // Resolución SIEMPRE por backend para evitar nombres repetidos entre proyectos.
+  useEffect(() => {
+    let abort = false;
+    setProjectName(null); // limpia al cambiar de diagrama
+
+    if (!onDiagramPage || !diagramId) return;
+
+    const token = localStorage.getItem("accessToken") || localStorage.getItem("token");
+    const headers = { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+
+    const fetchJson = async (url) => {
+      try {
+        const r = await fetch(url, { headers, credentials: "include" });
+        if (!r.ok) return null;
+        return await r.json();
+      } catch { return null; }
+    };
+
+    (async () => {
+      // a) Obtener info del diagrama
+      const d = await fetchJson(`${apiBase}/api/diagrams/${diagramId}`);
+      if (abort) return;
+
+      // intentar nombre embebido
+      let name =
+        d?.project?.name ||
+        d?.projectName ||
+        d?.project_title ||
+        null;
+
+      // b) Si no viene, buscar por projectId
+      let projectId = d?.projectId || d?.project_id || d?.project?.id || null;
+      if (!name && projectId) {
+        const p = await fetchJson(`${apiBase}/api/projects/${projectId}`);
+        if (abort) return;
+        name = p?.name || p?.title || p?.projectName || null;
+      }
+
+      // c) Fallback: intentar leer del modelo que tienes en memoria (solo si nada del backend)
+      if (!name) {
+        try {
+          const obj = deepParseMaybe(modelJson);
+          name =
+            obj?.projectName ||
+            obj?.name ||
+            obj?.metadata?.name ||
+            obj?.info?.title ||
+            null;
+        } catch {}
+      }
+
+      if (!abort) setProjectName(name && String(name).trim() ? String(name).trim() : null);
+    })();
+
+    return () => { abort = true; };
+  }, [apiBase, onDiagramPage, diagramId, modelJson]);
+
   function downloadJSON() {
     if (!onDiagramPage) return;
     const obj = normalizeGoJsModel(deepParseMaybe(modelJson));
@@ -166,7 +226,7 @@ export default function Toolbar() {
     const model = normalizeGoJsModel(parsed);
     if (!model) return;
 
-    const defArtifact = (user?.projectName || "app").toLowerCase().replace(/\s+/g, "");
+    const defArtifact = "app"; // evita confundir con otros proyectos
     const artifactId = window.prompt("ArtifactId (nombre del proyecto Maven):", defArtifact) || defArtifact;
     const groupId = window.prompt("GroupId (paquete base Java):", "com.example") || "com.example";
 
@@ -263,6 +323,8 @@ export default function Toolbar() {
         .tb .peers { display:flex; align-items:center; gap:.25rem; }
         .tb .peer { display:flex; align-items:center; gap:.35rem; padding:.15rem .45rem; border-radius:999px; border:1px solid #e5e7eb; background:#fff; font-size:.8rem; }
         .tb .peer .dot { width:8px; height:8px; border-radius:50%; }
+        .tb .projectname { font-size:.75rem; color:#64748b; margin: 0 .25rem; }
+        @media (max-width: 640px) { .tb .projectname { display:none; } }
       `}</style>
 
       <div className="tb">
@@ -316,6 +378,11 @@ export default function Toolbar() {
               </span>
             ))}
           </div>
+        )}
+
+        {/* 🔹 Nombre del proyecto (pequeño, desde backend) */}
+        {projectName && (
+          <span className="projectname" title="Proyecto actual">{projectName}</span>
         )}
 
         {user && (
