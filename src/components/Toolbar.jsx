@@ -73,19 +73,31 @@ export default function Toolbar() {
     };
   }, [socket, onDiagramPage, diagramId, user]);
 
-  // 👉 Limpiar: solo nombres, sin duplicados, excluirme
+  // 👉 Mostrarme como “Tú”, ocultar genéricos y sin duplicados
   const visiblePeers = useMemo(() => {
-    const meId = user?.id ?? null;
+    const meId = user?.id != null ? String(user.id) : null;
     const meName = (user?.name || "").trim().toLowerCase();
+    const banned = new Set(["usuario", "user", "guest", "invitado"]);
     const seen = new Set();
+
     return (peers || [])
-      .map(p => ({ ...p, name: (p?.name || "").trim() }))
-      .filter(p => p.name.length > 0)                             // solo con nombre
-      .filter(p => (meId ? p.id !== meId : p.name.toLowerCase() !== meName)) // sin mí mismo
-      .filter(p => {                                              // sin duplicados
-        const key = p.id ?? p.name.toLowerCase();
-        if (seen.has(key)) return false;
-        seen.add(key);
+      .map(p => {
+        const rawName = (p?.name || "").trim();
+        const pid = p?.id != null ? String(p.id) : (p?.userId != null ? String(p.userId) : "");
+        const isMe =
+          (!!meId && pid && pid === meId) ||
+          (!!rawName && meName && rawName.toLowerCase() === meName);
+        const displayName = isMe ? "Tú" : rawName;
+        const key = pid || rawName.toLowerCase();
+        return { ...p, name: rawName, isMe, displayName, key };
+      })
+      // Oculta sin nombre o genéricos (salvo mi propio chip)
+      .filter(p => p.isMe || (p.name && !banned.has(p.name.toLowerCase())))
+      // Sin duplicados por id/nombre normalizado
+      .filter(p => {
+        if (!p.key) return false;
+        if (seen.has(p.key)) return false;
+        seen.add(p.key);
         return true;
       });
   }, [peers, user?.id, user?.name]);
@@ -159,7 +171,7 @@ export default function Toolbar() {
         name = p?.name || p?.title || p?.projectName || null;
       }
 
-      // c) Fallback: intentar leer del modelo que tienes en memoria (solo si nada del backend)
+      // c) Fallback desde el modelo en memoria
       if (!name) {
         try {
           const obj = deepParseMaybe(modelJson);
@@ -227,7 +239,7 @@ export default function Toolbar() {
     if (!model) return;
 
     const defArtifact = "app"; // evita confundir con otros proyectos
-    const artifactId = window.prompt("ArtifactId (nombre del proyecto Maven):", defArtifact) || defArtifact;
+    const artifactId = window.prompt("ArtifactId (nombre del proyecto Maven):", defArtifact) || defArtifact; // FIX
     const groupId = window.prompt("GroupId (paquete base Java):", "com.example") || "com.example";
 
     try {
@@ -366,14 +378,14 @@ export default function Toolbar() {
 
         <div className="push" />
 
-        {/* 👥 Conectados (solo nombres, sin duplicados, sin mí) */}
+        {/* 👥 Conectados (muestra “Tú” y oculta genéricos) */}
         {onDiagramPage && diagramId && visiblePeers.length > 0 && (
           <div className="grp peers" aria-label="Conectados">
             {visiblePeers.map((p, i) => (
-              <span key={`${p.id ?? p.name}-${i}`} className="peer" title={p.name}>
+              <span key={`${p.key || p.id || p.name}-${i}`} className="peer" title={p.displayName}>
                 <span className="dot" style={{ background: p.color || "#16a34a" }} />
                 <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {p.name}
+                  {p.displayName}
                 </span>
               </span>
             ))}

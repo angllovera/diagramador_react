@@ -258,23 +258,6 @@ const PALETTE_SETS = {
       name: "ValueObject",
       stereotype: "valueObject",
     },
-    {
-      key: "Service",
-      category: "class",
-      name: "Service",
-      stereotype: "service",
-      operations: [{ name: "execute", type: "void" }],
-    },
-    { key: "IFaceTemplate", category: "interface", name: "Interfaz" },
-    {
-      key: "EnumTemplate",
-      category: "enum",
-      name: "Enum",
-      literals: [{ name: "A" }, { name: "B" }],
-    },
-    { key: "PackageTemplate", isGroup: true, name: "Paquete" },
-    { key: "NoteTemplate", category: "note", text: "Nota..." },
-    { key: "JunctionTemplate", category: "junction" },
   ],
   er: [
     {
@@ -289,14 +272,8 @@ const PALETTE_SETS = {
       name: "WeakEntity",
       attributes: [{ name: "id", type: "PK" }],
     },
-    { key: "NoteER", category: "note", text: "Attribute" },
-    { key: "DotER", category: "junction" },
   ],
-  basico: [
-    { key: "Note", category: "note", text: "Nota..." },
-    { key: "Dot", category: "junction" },
-    { key: "Pkg", isGroup: true, name: "Grupo" },
-  ],
+  basico: [],
 };
 
 // ---- util: deduplicar por “firma” (category|isGroup|name|stereotype)
